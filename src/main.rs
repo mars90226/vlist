@@ -1,79 +1,104 @@
 use std::mem;
 use std::fmt;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 struct VList<T: fmt::Display> {
-  base: Option<Box<VSeg<T>>>
+  base: Option<Rc<RefCell<VSeg<T>>>>,
+  offset: usize,
 }
 
 struct VSeg<T: fmt::Display> {
-  next: Option<Box<VSeg<T>>>,
-  ele: Vec<T>,
+  next: Option<Rc<RefCell<VSeg<T>>>>,
+  ele: Vec<Rc<RefCell<T>>>,
 }
 
-impl<T: fmt::Display> VList<T> {
-  fn index(&self, mut i: usize) -> Option<&T> {
-    match self.base {
-      Some(ref seg) => i += seg.ele.capacity() - seg.ele.len(),
-      None => return None,
-    }
-
-    let mut sg = &self.base;
-    loop {
-      match *sg {
+impl<T: fmt::Display> VSeg<T> {
+  fn index(&self, i: usize) -> Option<Rc<RefCell<T>>> {
+    let capacity = self.ele.capacity();
+    if i < capacity {
+      let index = capacity - 1 - i;
+      Some(self.ele[index].clone())
+    } else {
+      match self.next {
         Some(ref seg) => {
-          if i < seg.ele.capacity() {
-            let index = seg.ele.capacity() - 1 - i;
-            return Some(&seg.ele[index]);
-          }
-          i -= seg.ele.capacity();
-          sg = &seg.next;
+          seg.borrow().index(i - capacity)
         },
-        None => return None,
+        None => None,
       }
     }
   }
 
-  fn cons(&mut self, e: T) -> &VList<T> {
-    match self.base {
-      Some(ref mut seg) => {
-        if seg.ele.len() == seg.ele.capacity() {
-          let len = seg.ele.capacity() * 2;
-          let mut ele = Vec::with_capacity(len);
-
-          ele.push(e);
-          let old = mem::replace(seg, Box::new(VSeg { next: None, ele: Vec::new() }));
-          **seg = VSeg { next: Some(old), ele: ele };
-        } else {
-          seg.ele.push(e);
-        }
-      },
-      None => {
-        self.base = Some(Box::new(VSeg {
-          next: None,
-          ele: vec![e]
-        }));
-      },
+  fn each<F: FnMut(Rc<RefCell<T>>)>(&self, mut f: F) {
+    for e in self.ele.iter().rev() {
+      f(e.clone());
     }
-    self
+
+    match self.next {
+      Some(ref next) => {
+        next.borrow().each(f);
+      },
+      None => (),
+    }
+  }
+}
+
+impl<T: fmt::Display> VList<T> {
+  fn index(&self, i: usize) -> Option<Rc<RefCell<T>>> {
+    match self.base {
+      Some(ref seg) => {
+        let index = i + seg.borrow().ele.capacity() - self.offset - 1;
+        seg.borrow().index(index)
+      },
+      None => None,
+    }
   }
 
-  fn cdr(&mut self) -> Option<&mut VList<T>> {
+  fn cons(&mut self, e: T) -> VList<T> {
     match self.base {
-      Some(ref mut seg) if seg.ele.len() != 0 => {
-        seg.ele.pop();
+      Some(ref mut seg) if self.offset + 1 != seg.borrow().ele.capacity() => {
+        seg.borrow_mut().ele.push(Rc::new(RefCell::new(e)));
+        VList { base: Some(seg.clone()), offset: self.offset + 1 }
       },
       Some(..) => {
-        let old = mem::replace(&mut self.base, None);
-        self.base = old.unwrap().next;
+        let seg = self.base.as_ref().unwrap();
+        let capacity = seg.borrow().ele.capacity();
+        let mut ele = Vec::with_capacity(capacity * 2);
+        ele.push(Rc::new(RefCell::new(e)));
+
+        VList {
+          base: Some(Rc::new(RefCell::new(VSeg { next: Some(seg.clone()), ele: ele }))),
+          offset: 0
+        }
       },
-      None => return None,
+      None => VList {
+        base: Some(Rc::new(RefCell::new(VSeg {
+          next: None,
+          ele: vec![Rc::new(RefCell::new(e))]
+        }))),
+        offset: 0
+      },
     }
-    Some(&mut *self)
+  }
+
+  fn cdr(&mut self) -> Option<VList<T>> {
+    match self.base {
+      Some(ref mut seg) if seg.borrow().ele.len() != 0 => {
+        Some(VList { base: Some(seg.clone()), offset: self.offset - 1 })
+      },
+      Some(ref mut seg) => {
+        match seg.clone().borrow().next {
+          Some(ref next_seg) => Some(VList { base: Some(next_seg.clone()), offset: 0 }),
+          None =>  Some(VList { base: None, offset: 0 }),
+        }
+      },
+      None => None,
+    }
   }
 
   fn len(&self) -> usize {
     match self.base {
-      Some(ref seg) => seg.ele.capacity() + seg.ele.len() - 1,
+      Some(ref seg) => seg.borrow().ele.capacity() + self.offset - 1,
       None => 0,
     }
   }
@@ -82,20 +107,19 @@ impl<T: fmt::Display> VList<T> {
     match self.base {
       Some(ref seg) => {
         let mut result = "[".to_string();
-        let mut sg = seg;
-        let mut sl = &seg.ele[];
-        loop {
-          for e in sl.iter().rev() {
-            result.push_str(&format!(" {}", e)[]);
-          }
+        let sg = seg;
 
-          match sg.next {
-            Some(ref next) => {
-              sg = next;
-              sl = sg.ele.as_slice();
-            },
-            None => break,
-          }
+        for e in seg.borrow().ele[..self.offset + 1].iter().rev() {
+          result.push_str(&format!(" {}", *e.borrow())[]);
+        }
+
+        match seg.borrow().next {
+          Some(ref next_seg) => {
+            next_seg.borrow().each(|&mut: e| {
+              result.push_str(&format!(" {}", *e.borrow())[]);
+            });
+          },
+          None => (),
         }
 
         result.push_str(" ]");
@@ -106,18 +130,24 @@ impl<T: fmt::Display> VList<T> {
   }
 
   fn print_structure(&self) {
-    let mut sg = &self.base;
-    loop {
-      match *sg {
-        Some(ref seg) => {
-          for e in seg.ele.iter().rev() {
-            print!(" {}", e);
-          }
-          sg = &seg.next;
-        },
-        None => break,
-      }
+    match self.base {
+      Some(ref seg) => {
+        for e in seg.borrow().ele[..self.offset + 1].iter().rev() {
+          print!(" {}", *e.borrow());
+        }
+
+        match seg.borrow().next {
+          Some(ref next_seg) => {
+            next_seg.borrow().each(|&mut: e| {
+              print!(" {}", *e.borrow());
+            });
+          },
+          None => (),
+        }
+      },
+      None => (),
     }
+
     println!("")
   }
 }
@@ -129,27 +159,27 @@ impl<T: fmt::Display> fmt::Display for VList<T> {
 }
 
 fn main() {
-  let mut v: VList<i32> = VList { base: None };
+  let mut v: VList<i32> = VList { base: None, offset: 0 };
   println!("zero value for type. empty VList: {}", v);
   v.print_structure();
 
   for a in range(1, 7).rev() {
-    v.cons(a);
+    v = v.cons(a);
   }
   println!("demonstrate cons. 6 elements added: {}", v);
   v.print_structure();
 
-  v.cdr();
+  v = v.cdr().unwrap();
   println!("demonstrate cdr. 1 elements removed: {}", v);
   v.print_structure();
 
   println!("demonstrate length. length = {}", v.len());
   println!("");
 
-  println!("demonstrate element access. v[3] = {}", v.index(3).unwrap());
+  println!("demonstrate element access. v[3] = {}", *v.index(3).unwrap().borrow());
   println!("");
 
-  v.cdr().unwrap().cdr();
+  v = v.cdr().unwrap().cdr().unwrap();
   println!("show cdr releasing segment. 2 elements removed: {}", v);
   v.print_structure();
 }
