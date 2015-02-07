@@ -169,17 +169,19 @@ fn main() {
   println!("demonstrate cons. 6 elements added: {}", v);
   v.print_structure();
 
-  v = v.cdr().unwrap();
-  println!("demonstrate cdr. 1 elements removed: {}", v);
-  v.print_structure();
+  let mut modified_v = v.cdr().unwrap();
+  println!("demonstrate cdr. 1 elements removed: {}", modified_v);
+  modified_v.print_structure();
 
-  println!("demonstrate length. length = {}", v.len());
+  println!("demonstrate length. length = {}", modified_v.len());
   println!("");
 
-  println!("demonstrate element access. v[3] = {}", *v.index(3).unwrap().borrow());
+  println!("demonstrate element access. v[3] = {}", *modified_v.index(3).unwrap().borrow());
   println!("");
 
-  v = v.cdr().unwrap().cdr().unwrap();
-  println!("show cdr releasing segment. 2 elements removed: {}", v);
-  v.print_structure();
+  modified_v = modified_v.cdr().unwrap().cdr().unwrap();
+  println!("show cdr releasing segment. 2 elements removed: {}", modified_v);
+  modified_v.print_structure();
+
+  println!("original v: {}", v);
 }
